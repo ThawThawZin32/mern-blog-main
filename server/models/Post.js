@@ -23,6 +23,19 @@ const postSchema = new mongoose.Schema({
     }],
     default: [],
   },
+  category: {
+    type: String,
+    enum: [
+      'agriculture',
+      'business',
+      'education',
+      'entertainment',
+      'art',
+      'investment',
+      'uncategorized',
+      'weather',
+    ],
+  },
   coverImage: {
     type: String,
     default: null,

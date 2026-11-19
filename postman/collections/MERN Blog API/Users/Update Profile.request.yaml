@@ -1,0 +1,19 @@
+$kind: http-request
+name: Update Profile
+method: PATCH
+url: 'http://localhost:5000/api/users/{{userId}}'
+order: 4000
+auth:
+  type: bearer
+  credentials:
+    - key: token
+      value: '{{token}}'
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "name": "New Name"
+    }

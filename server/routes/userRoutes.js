@@ -77,10 +77,11 @@ const registerHandler = async (req, res) => {
       user: {
         id: String(user._id),
         name: user.name,
-        username: user.username || user.name,
+        username: user.username,
         email: user.email,
         profilePicture: user.profilePicture,
         avatar: user.avatar,
+        role: user.role,
       },
       token: createToken(user._id),
     },
@@ -112,10 +113,11 @@ const loginHandler = async (req, res) => {
       user: {
         id: String(user._id),
         name: user.name,
-        username: user.username || user.name,
+        username: user.username,
         email: user.email,
         profilePicture: user.profilePicture,
         avatar: user.avatar,
+        role: user.role,
       },
       token: createToken(user._id),
     },
@@ -155,7 +157,7 @@ const uploadHandler = async (req, res) => {
       user: {
         id: String(user._id),
         name: user.name,
-        username: user.username || user.name,
+        username: user.username,
         email: user.email,
         profilePicture: user.profilePicture,
         avatar: user.avatar,
@@ -193,7 +195,7 @@ router.get('/authors', async (req, res) => {
 
 router.get('/me', requireAuth, async (req, res) => {
   const user = await User.findById(req.auth.userId)
-    .select('name username email profilePicture createdAt');
+    .select('name username email profilePicture role createdAt');
   if (!user) {
     throw new HttpError(404, 'User not found.');
   }
@@ -220,7 +222,7 @@ router.get('/:id', async (req, res) => {
       user: {
         id: String(user._id),
         name: user.name,
-        username: user.username || user.name,
+        username: user.username,
         profilePicture: user.profilePicture,
         createdAt: user.createdAt,
         postCount,
@@ -244,10 +246,11 @@ router.patch('/:id', requireAuth, async (req, res) => {
 
   const body = req.body || {};
   const hasName = Object.hasOwn(body, 'name');
+  const hasUsername = Object.hasOwn(body, 'username');
   const hasEmail = Object.hasOwn(body, 'email');
   const hasNewPassword = Object.hasOwn(body, 'newPassword') && body.newPassword !== '';
-  if (!hasName && !hasEmail && !hasNewPassword) {
-    throw new HttpError(400, 'Provide a name, email, or new password to update.');
+  if (!hasName && !hasUsername && !hasEmail && !hasNewPassword) {
+    throw new HttpError(400, 'Provide a name, username, email, or new password to update.');
   }
   if (hasName) {
     if (typeof body.name !== 'string' || !body.name.trim() || body.name.trim().length > 80) {
@@ -255,11 +258,37 @@ router.patch('/:id', requireAuth, async (req, res) => {
     }
     user.name = body.name.trim();
   }
+  if (hasUsername) {
+    if (typeof body.username !== 'string' || body.username.trim().length > 80) {
+      throw new HttpError(400, 'Username must be text and 80 characters or fewer.');
+    }
+    const username = body.username.trim().toLowerCase();
+    if (username && username !== user.username) {
+      const usernameInUse = await User.exists({
+        username,
+        _id: { $ne: user._id },
+      });
+      if (usernameInUse) {
+        throw new HttpError(409, 'That username is already in use.');
+      }
+    }
+    user.username = username || undefined;
+  }
   if (hasEmail) {
     if (!validateEmail(body.email)) {
       throw new HttpError(400, 'A valid email address is required.');
     }
-    user.email = body.email.trim().toLowerCase();
+    const email = body.email.trim().toLowerCase();
+    if (email !== user.email) {
+      const emailInUse = await User.exists({
+        email,
+        _id: { $ne: user._id },
+      });
+      if (emailInUse) {
+        throw new HttpError(409, 'That email address is already in use.');
+      }
+    }
+    user.email = email;
   }
   if (hasNewPassword) {
     if (
@@ -280,17 +309,31 @@ router.patch('/:id', requireAuth, async (req, res) => {
     throw new HttpError(400, 'Provide a new password to change your password.');
   }
 
-  await user.save();
+  try {
+    await user.save();
+  } catch (saveError) {
+    if (saveError.code === 11000) {
+      const duplicateField = Object.keys(saveError.keyPattern || {})[0];
+      throw new HttpError(
+        409,
+        duplicateField === 'username'
+          ? 'That username is already in use.'
+          : 'That email address is already in use.',
+      );
+    }
+    throw saveError;
+  }
   res.json({
     success: true,
     data: {
       user: {
         id: String(user._id),
         name: user.name,
-        username: user.username || user.name,
+        username: user.username,
         email: user.email,
         profilePicture: user.profilePicture,
         avatar: user.avatar,
+        role: user.role,
       },
     },
   });
@@ -301,7 +344,10 @@ router.delete('/:id', requireAuth, async (req, res) => {
     throw new HttpError(400, 'Invalid user ID.');
   }
   if (req.params.id !== req.auth.userId) {
-    throw new HttpError(403, 'You can only delete your own account.');
+    const requester = await User.findById(req.auth.userId).select('role');
+    if (requester?.role !== 'admin') {
+      throw new HttpError(403, 'You can only delete your own account or an admin can delete accounts.');
+    }
   }
 
   const user = await User.findById(req.params.id);
@@ -309,10 +355,12 @@ router.delete('/:id', requireAuth, async (req, res) => {
     throw new HttpError(404, 'User not found.');
   }
 
-  // Delete all posts by this user
+  const posts = await Post.find({ author: user._id }).select('coverImage').lean();
   await Post.deleteMany({ author: req.params.id });
+  await Promise.all(posts.map((post) => (
+    post.coverImage ? removeImageSafely(post.coverImage) : Promise.resolve()
+  )));
 
-  // Remove profile picture if exists
   if (user.profilePicture) {
     await removeImageSafely(user.profilePicture);
   }

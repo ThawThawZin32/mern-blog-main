@@ -69,6 +69,13 @@ function readPostFields(body, { partial = false } = {}) {
     fields.tags = parseTags(body.tags);
   }
 
+  if (Object.hasOwn(body, 'category')) {
+    if (typeof body.category !== 'string' || !categories.has(body.category.trim().toLowerCase())) {
+      throw new HttpError(400, 'Invalid post category.');
+    }
+    fields.category = body.category.trim().toLowerCase();
+  }
+
   return fields;
 }
 
@@ -112,8 +119,21 @@ async function listPosts(req, res, authorId) {
     }
     const category = req.query.category.trim().toLowerCase();
     conditions.push(category === 'uncategorized'
-      ? { $or: [{ tags: { $exists: false } }, { tags: { $size: 0 } }] }
-      : { tags: category });
+      ? {
+        $or: [
+          { category: 'uncategorized' },
+          {
+            category: { $exists: false },
+            $or: [{ tags: { $exists: false } }, { tags: { $size: 0 } }],
+          },
+        ],
+      }
+      : {
+        $or: [
+          { category },
+          { category: { $exists: false }, tags: category },
+        ],
+      });
   }
   if (req.query.search !== undefined) {
     if (typeof req.query.search !== 'string' || req.query.search.length > 100) {
@@ -195,12 +215,17 @@ const updatePostHandler = async (req, res) => {
     throw new HttpError(404, 'Post not found.');
   }
   if (String(post.author) !== req.auth.userId) {
-    throw new HttpError(403, 'You can only delete your own posts');
+    throw new HttpError(403, 'You can only edit or delete your own posts.');
   }
 
   const fields = readPostFields(req.body || {}, { partial: true });
   const image = getUploadedImage(req);
-  if (Object.keys(fields).length === 0 && !image) {
+  const removeCoverImage = req.body?.removeCoverImage;
+  if (removeCoverImage !== undefined && removeCoverImage !== 'true' && removeCoverImage !== 'false') {
+    throw new HttpError(400, 'removeCoverImage must be true or false.');
+  }
+  const shouldRemoveCoverImage = removeCoverImage === 'true';
+  if (Object.keys(fields).length === 0 && !image && !shouldRemoveCoverImage) {
     throw new HttpError(400, 'Provide at least one post field or a cover image to update.');
   }
 
@@ -210,6 +235,8 @@ const updatePostHandler = async (req, res) => {
     if (image) {
       newCoverImage = await saveCoverImage(image);
       post.coverImage = newCoverImage;
+    } else if (shouldRemoveCoverImage) {
+      post.coverImage = null;
     }
     Object.assign(post, fields);
     await post.save();
@@ -221,7 +248,7 @@ const updatePostHandler = async (req, res) => {
     throw error;
   }
 
-  if (newCoverImage && oldCoverImage) {
+  if ((newCoverImage || shouldRemoveCoverImage) && oldCoverImage) {
     await removeCoverImageSafely(oldCoverImage);
   }
   res.json({ success: true, data: { post } });

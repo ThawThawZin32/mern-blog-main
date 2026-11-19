@@ -1,0 +1,10 @@
+$kind: http-request
+name: Get My Posts
+method: GET
+url: 'http://localhost:5000/api/posts/mine'
+order: 2000
+auth:
+  type: bearer
+  credentials:
+    - key: token
+      value: '{{token}}'
